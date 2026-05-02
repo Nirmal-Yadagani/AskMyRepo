@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "askmyrepo"
+version = "0.1.0"
+description = "Agentic RAG system for querying any GitHub repository"
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "chromadb>=0.5",
+    "ollama>=0.2",
+    "streamlit>=1.35",
+    "pydantic>=2.0",
+    "gitpython>=3.1",
+    "rich>=13",
+]
+
+[project.scripts]
+askmyrepo = "askmyrepo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["askmyrepo*"]
