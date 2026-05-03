@@ -30,19 +30,14 @@ class CodeParser:
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self._parsers: dict[str, tree_sitter.Parser] = {}
+        self._parser: tree_sitter.Parser | None = None
 
-    def _get_parser(self, lang: Language) -> tree_sitter.Parser:
-        """Get or create a tree-sitter parser for the given language."""
-        if lang not in self._parsers:
-            if lang == Language.PYTHON:
-                lang_module = tree_sitter_python.language()
-            else:
-                # Default to Python parser for unsupported languages
-                # In a full implementation, register other grammar packages
-                lang_module = tree_sitter_python.language()
-            self._parsers[lang] = tree_sitter.Parser(lang_module)
-        return self._parsers[lang]
+    def _get_parser(self) -> tree_sitter.Parser:
+        """Get or create the tree-sitter parser (lazy init)."""
+        if self._parser is None:
+            py_lang = tree_sitter.Language(tree_sitter_python.language())
+            self._parser = tree_sitter.Parser(py_lang)
+        return self._parser
 
     def parse_file(self, file_path: Path) -> list[CodeNode]:
         """Parse a single file and extract AST nodes.
@@ -54,22 +49,25 @@ class CodeParser:
             List of CodeNode objects extracted from the file.
         """
         lang = detect_language(str(file_path))
-        if lang == Language.UNKNOWN or lang not in SUPPORTED_EXTENSIONS:
+        if lang == Language.UNKNOWN:
+            return []
+
+        _, ext = os.path.splitext(file_path)
+        if ext not in SUPPORTED_EXTENSIONS:
             return []
 
         try:
-            source = file_path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
+            source = file_path.read_bytes()
+        except OSError:
             return []
 
         if len(source) > self.settings.max_file_size_bytes:
             return []
 
-        parser = self._get_parser(lang)
-        tree = parser.parse_bytes(source.encode("utf-8"))
+        parser = self._get_parser()
+        tree = parser.parse(source)
         root_node = tree.root_node
 
-        # Walk the tree and extract nodes
         nodes = []
         for child in root_node.children:
             node = self._extract_node(child, file_path, lang, source)
@@ -78,13 +76,14 @@ class CodeParser:
 
         return nodes
 
-    def _extract_node(self, node, file_path: Path, lang: Language, source: str) -> CodeNode | None:
+    def _extract_node(self, node, file_path: Path, lang: Language, source: bytes) -> CodeNode | None:
         """Extract a CodeNode from a tree-sitter node."""
-        nt = _node_type_from_ts(node.type)
-
-        # Only extract definition-type nodes (not raw calls)
-        if nt not in (NodeType.FUNCTION_DEF, NodeType.CLASS_DEF, NodeType.IMPORT):
+        # Early-exit: only extract definition-type nodes
+        known_types = ("function_definition", "class_definition", "import_statement")
+        if node.type not in known_types:
             return None
+
+        nt = _node_type_from_ts(node.type)
 
         name = node_name(node) or f"<{node.type}>"
         params = node_params(node) if nt in (NodeType.FUNCTION_DEF, NodeType.METHOD_DEF) else None

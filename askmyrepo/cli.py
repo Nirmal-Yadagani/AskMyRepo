@@ -1,10 +1,7 @@
-"""CLI entry point for AskMe."""
+"""CLI entry point for AskMyRepo."""
 
 import argparse
-import sys
 from pathlib import Path
-
-import typer
 
 from askmyrepo.config import get_settings
 from askmyrepo.indexing.indexer import Indexer
@@ -81,7 +78,7 @@ def main():
             for r in repos:
                 print(f"  {r}")
         else:
-            print("No cloned repos. Use 'askme clone <url>' first.")
+            print("No cloned repos. Use 'askmyrepo clone <url>' first.")
 
 
 if __name__ == "__main__":

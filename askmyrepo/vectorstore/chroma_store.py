@@ -22,11 +22,12 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def add_chunks(self, chunks: list[CodeChunk]) -> int:
+    def add_chunks(self, chunks: list[CodeChunk], embeddings: list[list[float]] | None = None) -> int:
         """Add chunks to the vector store.
 
         Args:
             chunks: List of CodeChunk objects to store.
+            embeddings: Pre-computed embeddings (if None, ChromaDB generates its own).
 
         Returns:
             Number of chunks added.
@@ -38,14 +39,18 @@ class VectorStore:
         documents = [c.text for c in chunks]
         metadatas = [c.metadata for c in chunks]
 
-        self._collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        kwargs: dict = {"ids": ids, "documents": documents, "metadatas": metadatas}
+        if embeddings is not None:
+            kwargs["embeddings"] = embeddings
+
+        self._collection.add(**kwargs)
         return len(chunks)
 
     def search(self, query_embedding: list[float], top_k: int = 8) -> list[SearchResult]:
-        """Search for relevant chunks.
+        """Search for relevant chunks using a pre-computed query embedding.
 
         Args:
-            query_embedding: Embedding vector for the query.
+            query_embedding: Embedding vector for the query (must match collection embedding dim).
             top_k: Number of results to return.
 
         Returns:
@@ -54,7 +59,7 @@ class VectorStore:
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=min(top_k, self._collection.count()),
-            include=["distances"],
+            include=["documents", "distances", "metadatas"],
         )
 
         search_results: list[SearchResult] = []

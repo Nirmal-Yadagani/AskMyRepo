@@ -39,15 +39,28 @@ class SearchCodebaseTool:
         if self.vector_store.count() == 0:
             return "No chunks indexed yet. Run the indexing pipeline first."
 
-        embeddings = self.embedder.embed([query])
-        results = self.vector_store.search(embeddings[0], top_k=min(top_k, self.settings.top_k_results))
+        # Build enriched queries for better semantic coverage
+        enriched_queries = self._enrich_query(query)
 
-        if not results:
+        # Search with all queries, merge results by file_path+line_range
+        best_results: dict[str, tuple] = {}
+        for q in enriched_queries:
+            emb = self.embedder.embed([q])[0]
+            results = self.vector_store.search(emb, top_k=min(top_k * 2, self.settings.top_k_results))
+            for r in results:
+                key = f"{r.file_path}:{r.line_start}-{r.line_end}"
+                if key not in best_results or r.score > best_results[key][1]:
+                    best_results[key] = (r, r.score)
+
+        if not best_results:
             return f"No results found for query: {query}"
 
+        # Sort by score and take top_k
+        sorted_results = sorted(best_results.values(), key=lambda x: x[1], reverse=True)[:top_k]
+
         lines = []
-        for i, r in enumerate(results, 1):
-            lines.append(f"\n=== Result {i} (score: {r.score:.3f}) ===")
+        for i, (r, score) in enumerate(sorted_results, 1):
+            lines.append(f"\n=== Result {i} (score: {score:.3f}) ===")
             lines.append(f"File: {r.file_path}:{r.line_start}-{r.line_end}")
             # Show first 300 chars of the chunk
             preview = r.text[:300].replace("\n", " ").strip()
@@ -56,3 +69,21 @@ class SearchCodebaseTool:
                 lines.append("... (truncated)")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _enrich_query(query: str) -> list[str]:
+        """Generate enriched queries for better search coverage."""
+        queries = [query]
+        q_lower = query.lower()
+
+        # Add context keywords based on query patterns
+        if any(w in q_lower for w in ("class", "what is", "what's", "what does")):
+            queries.append(f"{query} class definition")
+        if any(w in q_lower for w in ("function", "method", "how does", "how is")):
+            queries.append(f"{query} function implementation")
+        if any(w in q_lower for w in ("import", "where", "used by")):
+            queries.append(f"{query} import usage")
+        if "repo" in q_lower and any(w in q_lower for w in ("clone", "download", "fetch")):
+            queries.append(f"{query} cloning repository github")
+
+        return queries

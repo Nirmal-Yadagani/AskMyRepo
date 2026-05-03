@@ -12,7 +12,7 @@ from askmyrepo.vectorstore.chroma_store import VectorStore
 from .tool_registry import ToolRegistry, _make_tool_response
 
 
-MAX_TOOL_CALLS = 10  # Prevent infinite loops
+MAX_TOOL_CALLS = 5  # Prevent infinite loops
 
 
 class AskMeAgent:
@@ -100,7 +100,7 @@ class AskMeAgent:
             Dict with 'answer', 'tool_usage', 'messages'.
         """
         system_prompt = (
-            "You are AskMe, a code analysis agent. You help users understand any GitHub repository by "
+            "You are AskMyRepo, a code analysis agent. You help users understand any GitHub repository by "
             "analyzing its code. Use the available tools to gather information before answering.\n\n"
             f"Available tools: {self.registry.list_tools()}\n\n"
             "Tool usage rules:\n"
@@ -121,14 +121,28 @@ class AskMeAgent:
         tool_usage: list[dict] = []
 
         for _ in range(MAX_TOOL_CALLS):
-            tools = self.registry.get_tools_def() if tool_usage else []
-            response = self.chat_provider.chat(messages, tools=tools if tools else None)
+            tools = self.registry.get_tools_def()
+            response = self.chat_provider.chat(messages, tools=tools)
 
             content = response.get("content", "")
             tool_calls = response.get("tool_calls")
 
+            # Also try to extract tool calls from JSON in content (for LLMs without native tool calling)
+            if not tool_calls:
+                tool_calls = self._parse_tool_calls_from_content(content)
+
+            # If we already have results, stop only if LLM gives a REAL answer (not tool-call artifacts)
+            if tool_usage and not tool_calls and content:
+                # Reject tool-call artifacts as final answers
+                if ("[Calling" in content or
+                    '{"' in content or
+                    '```json' in content or
+                    '`json' in content):
+                    continue  # LLM is still calling tools, keep going
+                return {"answer": content, "tool_usage": tool_usage, "messages": messages}
+
             if tool_calls:
-                # Execute the first tool call
+                # Execute tool calls
                 for tc in tool_calls:
                     tool_name = tc["name"]
                     tool_args = tc["arguments"] if isinstance(tc["arguments"], dict) else {}
@@ -161,14 +175,59 @@ class AskMeAgent:
                     "messages": messages,
                 }
 
-        # Safety: if we exceeded tool calls, give best-effort answer
-        messages.append({
+        # Safety: force answer by using a fresh message set
+        safety_msgs = messages + [{
             "role": "user",
-            "content": "You've used too many tool calls. Please synthesize what you've found so far into an answer.",
-        })
-        response = self.chat_provider.chat(messages)
+            "content": "STOP. You have enough information. Answer the user's question now with a direct text answer. Do NOT call any tools.",
+        }]
+        response = self.chat_provider.chat(safety_msgs)
+        answer = response.get("content", "")
+        # Check if the LLM is still trying to call tools (not a real answer)
+        if answer and not (
+            "[" in answer and "Calling" in answer
+            or '{"' in answer or "```json" in answer
+            or "command" in answer.lower() or "arguments" in answer.lower()
+        ):
+            return {"answer": answer, "tool_usage": tool_usage, "messages": messages}
+
         return {
-            "answer": response.get("content", "No answer generated."),
+            "answer": "Here's what I found:\n\n" + "\n".join(
+                f"- **{tc['tool']}**: {tc['result_preview'][:150]}" for tc in tool_usage
+            ),
             "tool_usage": tool_usage,
             "messages": messages,
         }
+
+    @staticmethod
+    def _parse_tool_calls_from_content(content: str) -> list[dict] | None:
+        """Extract tool calls from LLM content when native tool calling isn't supported."""
+        import re
+
+        # Try single JSON object with "command" key
+        json_match = re.search(r'\{[^{}]*"command"\s*:[^{}]*\}', content)
+        if json_match:
+            try:
+                tool_call = json.loads(json_match.group())
+                name = tool_call.get("command", tool_call.get("name", ""))
+                args = tool_call.get("arguments", tool_call.get("args", {}))
+                if name:
+                    return [{"name": name, "arguments": args, "id": ""}]
+            except json.JSONDecodeError:
+                pass
+
+        # Try JSON array of tool calls
+        json_arr_match = re.search(r'\[[^\]]*\{[^{}]*"command"\s*:[^{}]*\}', content)
+        if json_arr_match:
+            try:
+                arr = json.loads(json_arr_match.group())
+                calls = []
+                for item in arr:
+                    name = item.get("command", item.get("name", ""))
+                    args = item.get("arguments", item.get("args", {}))
+                    if name:
+                        calls.append({"name": name, "arguments": args, "id": ""})
+                return calls if calls else None
+            except json.JSONDecodeError:
+                pass
+
+        return None

@@ -23,9 +23,10 @@ class Embedder:
         Returns:
             List of embedding vectors (each a list of floats).
         """
+        client = ollama.Client(host=self.base_url)
         embeddings: list[list[float]] = []
         for text in texts:
-            response = ollama.embeddings(model=self.model, prompt=text, host=self.base_url)
+            response = client.embeddings(model=self.model, prompt=text)
             embeddings.append(response["embedding"])
         return embeddings
 
@@ -55,15 +56,8 @@ class ChatProvider:
         Returns:
             Response dict with 'content' and optionally 'tool_calls'.
         """
-        params: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "host": self.base_url,
-        }
-        if tools:
-            params["tools"] = tools
-
-        response = ollama.chat(**params)
+        client = ollama.Client(host=self.base_url)
+        response = client.chat(model=self.model, messages=messages, tools=tools)
         message = response["message"]
 
         result: dict[str, Any] = {"content": message.get("content", "")}

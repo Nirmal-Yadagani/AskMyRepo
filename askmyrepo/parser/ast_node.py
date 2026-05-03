@@ -24,7 +24,7 @@ def _node_type_from_ts(node_type: str) -> NodeType:
 def node_name(node) -> str:
     """Extract the name of a tree-sitter node if it has one."""
     try:
-        return node.children_by_field("name")[0].text.decode()
+        return node.children_by_field_name("name")[0].text.decode()
     except (AttributeError, IndexError):
         return ""
 
@@ -42,7 +42,7 @@ def node_params(node) -> list[dict[str, str]] | None:
             if child.type == "identifier":
                 param_name = child.text.decode()
             elif child.type == "parameter":
-                name_node = child.children_by_field("name")
+                name_node = child.children_by_field_name("name")
                 if name_node:
                     param_name = name_node[0].text.decode()
             elif child.type == "type_annotation":
@@ -72,8 +72,8 @@ def node_base_classes(node) -> list[str]:
     """Extract base classes from a class definition node."""
     bases = []
     try:
-        if hasattr(node, 'children_by_field'):
-            bases_node = node.children_by_field("superclasses")
+        if hasattr(node, 'children_by_field_name'):
+            bases_node = node.children_by_field_name("superclasses")
             if bases_node:
                 for base in bases_node[0].children:
                     if hasattr(base, 'type') and base.type == "identifier":

@@ -12,8 +12,9 @@ from askmyrepo.models import CodeChunk, CodeNode, Language
 class CodeChunker:
     """Create RAG chunks from parsed AST nodes and raw source files."""
 
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, repo_root: Path | None = None):
         self.settings = settings or get_settings()
+        self.repo_root = repo_root
 
     def chunk_from_nodes(self, nodes: list[CodeNode]) -> list[CodeChunk]:
         """Create chunks from AST nodes.
@@ -37,7 +38,12 @@ class CodeChunker:
         header = f"## File: {node.file_path}\n## Type: {chunk_type}\n"
         parts.append(header)
 
-        # Add docstring if available
+        # Add module-level docstring if available (file-level context)
+        module_doc = self._get_module_docstring(node)
+        if module_doc:
+            parts.append(f'## Module docstring: {module_doc}\n')
+
+        # Add class/function docstring if available
         if node.docstring:
             parts.append(f'"""{node.docstring}"""\n')
 
@@ -59,6 +65,11 @@ class CodeChunker:
         if context_lines:
             parts.append(f"# {context_lines[0]}\n")
 
+        # Include raw source code so the embedding has the actual method bodies and logic
+        source_code = self._extract_source_code(node)
+        if source_code:
+            parts.append(f"\n```python\n{source_code}\n```\n")
+
         chunks.append(CodeChunk(
             chunk_id=self._make_chunk_id(node),
             text="\n".join(parts),
@@ -75,10 +86,50 @@ class CodeChunker:
         ))
         return chunks
 
-    def chunk_raw_text(self, file_path: Path, repo_root: Path) -> list[CodeChunk]:
+    def _extract_source_code(self, node: CodeNode) -> str:
+        """Extract raw source code for a node's line range."""
+        path = Path(node.file_path)
+        if not path.is_absolute() and self.repo_root:
+            path = self.repo_root / node.file_path
+        if not path.is_file():
+            return ""
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+            lines = source.splitlines()
+            start = max(0, node.line_start - 1)
+            end = min(len(lines), node.line_end)
+            return "\n".join(lines[start:end])
+        except OSError:
+            return ""
+
+    def _get_module_docstring(self, node: CodeNode) -> str:
+        """Extract module-level docstring from the file."""
+        path = Path(node.file_path)
+        if not path.is_absolute() and self.repo_root:
+            path = self.repo_root / node.file_path
+        if not path.is_file():
+            return ""
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+            # First non-empty line(s) if it starts with """
+            first_line = source.strip()
+            if first_line.startswith('"""'):
+                end_quote = first_line.find('"""', 3)
+                if end_quote > 0:
+                    return first_line[3:end_quote]
+            if first_line.startswith("'''"):
+                end_quote = first_line.find("'''", 3)
+                if end_quote > 0:
+                    return first_line[3:end_quote]
+        except OSError:
+            pass
+        return ""
+
+    def chunk_raw_text(self, file_path: Path, repo_root: Path, doc_root: Path | None = None) -> list[CodeChunk]:
         """Create text-based chunks from raw file content (fallback layer).
 
         Uses sliding window over lines for comprehensive coverage.
+        Prepend module docstring for semantic context.
         """
         try:
             source = file_path.read_text(encoding="utf-8", errors="replace")
@@ -89,9 +140,25 @@ class CodeChunker:
         if not lines:
             return []
 
+        # Extract module docstring as semantic context
+        first_line = source.strip()
+        module_doc = ""
+        if first_line.startswith('"""'):
+            end_quote = first_line.find('"""', 3)
+            if end_quote > 0:
+                module_doc = first_line[3:end_quote]
+        elif first_line.startswith("'''"):
+            end_quote = first_line.find("'''", 3)
+            if end_quote > 0:
+                module_doc = first_line[3:end_quote]
+
         chunks: list[CodeChunk] = []
         lang = self._detect_lang(str(file_path))
-        rel_path = str(file_path.relative_to(repo_root)) if file_path.is_absolute() else str(file_path)
+        # Store path relative to doc_root for consistency
+        if doc_root:
+            rel_path = str(file_path.relative_to(doc_root)) if file_path.is_absolute() else str(file_path)
+        else:
+            rel_path = str(file_path.relative_to(repo_root)) if file_path.is_absolute() else str(file_path)
         chunk_size = self.settings.chunk_size_tokens
 
         # Rough line estimation: ~10 chars per token
@@ -100,7 +167,11 @@ class CodeChunker:
 
         for start in range(0, len(lines), lines_per_chunk - overlap):
             end = min(start + lines_per_chunk, len(lines))
-            chunk_text = "\n".join(lines[start:end])
+            chunk_lines = lines[start:end]
+            # Prepend module docstring to first chunk only
+            if start == 0 and module_doc:
+                chunk_lines.insert(0, f"## Module docstring: {module_doc}")
+            chunk_text = "\n".join(chunk_lines)
             if not chunk_text.strip():
                 continue
 

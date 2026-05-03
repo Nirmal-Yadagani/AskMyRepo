@@ -39,7 +39,7 @@ class RepoCloner:
             return False
 
     def _clone_github(self, url: str) -> Path:
-        repo_name = urlparse(url).path.strip("/").split("/")[-1]
+        repo_name = urlparse(url).path.strip("/").split("/")[-1].rstrip(".git")
         dest = self.base_dir / repo_name
 
         git_dir = dest / ".git"
